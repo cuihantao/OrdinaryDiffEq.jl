@@ -778,6 +778,42 @@ function perform_step!(integrator, cache::QNDF2Cache, repeat_step = false)
     return
 end
 
+# Seed the restart on the new side of the discontinuity: D[1] = dt u'(t⁺) from the
+# vector field at (uprev, p, t), for the step about to be taken, and `prevD` alike so
+# that a rejected first step rescales it with the history of the retry. Returns the
+# step length the history belongs to (`dtprev`). A mass matrix that is not diagonal gets
+# no seed: the restart is the unseeded one, `dtprev = 1`.
+function _qndf_restart!(cache::QNDFConstantCache, integrator)
+    (; f, p, uprev, t, dt) = integrator
+    cache.restart = false
+    m = _qndf_mass_diagonal(f.mass_matrix)
+    m === nothing && return one(dt)
+    rate = f(uprev, p, t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    cache.D[1] = dt * _qndf_rate.(rate, m)
+    cache.prevD[1] = copy(cache.D[1])
+    cache.dtprev = dt
+    cache.prevorder = 1
+    cache.restart = true
+    return dt
+end
+
+function _qndf_restart!(cache::QNDFCache, integrator)
+    (; f, p, uprev, t, dt) = integrator
+    cache.restart = false
+    m = _qndf_mass_diagonal(f.mass_matrix)
+    m === nothing && return one(dt)
+    rate = cache.dd # free until the step's own `dd`
+    f(rate, uprev, p, t)
+    OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
+    @. cache.D[1] = dt * _qndf_rate(rate, m)
+    copyto!(cache.prevD[1], cache.D[1])
+    cache.dtprev = dt
+    cache.prevorder = 1
+    cache.restart = true
+    return dt
+end
+
 function initialize!(integrator, cache::QNDFConstantCache{max_order}) where {max_order}
     integrator.kshortsize = max_order
     integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
@@ -801,8 +837,7 @@ function perform_step!(
     alg = unwrap_alg(integrator, true)
 
     if integrator.derivative_discontinuity
-        dtprev = one(dt)
-        order = 1
+        order = cache.order = 1
         cache.nconsteps = 0
         cache.consfailcnt = 0
         for i in eachindex(D)
@@ -811,6 +846,7 @@ function perform_step!(
         for i in eachindex(cache.prevD)
             cache.prevD[i] = zero(cache.prevD[i])
         end
+        dtprev = _qndf_restart!(cache, integrator)
     end
 
     k = order
@@ -868,10 +904,21 @@ function perform_step!(
     u = z
     dd = u - u₀
     update_D!(D, dd, k)
+    ddm = dd
+    if cache.restart
+        # The first step after a seeded restart has no second difference on the algebraic
+        # rows, which have no seed (see `_qndf_restart!`)
+        m = _qndf_mass_diagonal(mass_matrix)
+        if _qndf_has_algebraic(m)
+            ddm = _qndf_differential.(dd, m)
+            D[2] = _qndf_differential.(D[2], m)
+            D[3] = _qndf_differential.(D[3], m)
+        end
+    end
 
     if integrator.opts.adaptive
         (; abstol, reltol, internalnorm) = integrator.opts
-        if cache.consfailcnt > 1 && mass_matrix !== I
+        if cache.consfailcnt > 1 && mass_matrix !== I && !cache.restart
             # if we get repeated failure and mass_matrix !== I it's likely that
             # there's a discontinuity on the algebraic equations
             atmp = calculate_residuals(
@@ -879,7 +926,7 @@ function perform_step!(
                 internalnorm, t
             )
         else
-            atmp = calculate_residuals(dd, uprev, u, abstol, reltol, internalnorm, t)
+            atmp = calculate_residuals(ddm, uprev, u, abstol, reltol, internalnorm, t)
         end
         OrdinaryDiffEqCore.set_EEst!(integrator, error_constant(integrator, k) * internalnorm(atmp, t))
         if k > 1
@@ -905,6 +952,7 @@ function perform_step!(
         end
         cache.dtprev = dt
         cache.prevorder = k
+        cache.restart = false
         if integrator.opts.dense
             integrator.fsallast = f(u, p, t + dt)
             OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)
@@ -943,8 +991,7 @@ function perform_step!(
     alg = unwrap_alg(integrator, true)
 
     if integrator.derivative_discontinuity
-        dtprev = one(dt)
-        order = 1
+        order = cache.order = 1
         cache.nconsteps = 0
         cache.consfailcnt = 0
         for d in D
@@ -953,6 +1000,7 @@ function perform_step!(
         for d in cache.prevD
             recursivefill!(d, false)
         end
+        dtprev = _qndf_restart!(cache, integrator)
     end
 
     k = order
@@ -1016,11 +1064,22 @@ function perform_step!(
     @.. broadcast = false u = z
     @.. broadcast = false dd = u - u₀
     update_D!(D, dd, k)
-
+    ddm = dd
+    if cache.restart
+        # The first step after a seeded restart has no second difference on the algebraic
+        # rows, which have no seed (see `_qndf_restart!`)
+        m = _qndf_mass_diagonal(mass_matrix)
+        if _qndf_has_algebraic(m)
+            ddm = cache.tmp2
+            @. ddm = _qndf_differential(dd, m)
+            @. D[2] = _qndf_differential(D[2], m)
+            @. D[3] = _qndf_differential(D[3], m)
+        end
+    end
 
     if integrator.opts.adaptive
         (; abstol, reltol, internalnorm) = integrator.opts
-        if cache.consfailcnt > 1 && mass_matrix !== I
+        if cache.consfailcnt > 1 && mass_matrix !== I && !cache.restart
             # if we get repeated failure and mass_matrix !== I it's likely that
             # there's a discontinuity on the algebraic equations
             calculate_residuals!(
@@ -1028,7 +1087,7 @@ function perform_step!(
                 abstol, reltol, internalnorm, t
             )
         else
-            calculate_residuals!(atmp, dd, uprev, u, abstol, reltol, internalnorm, t)
+            calculate_residuals!(atmp, ddm, uprev, u, abstol, reltol, internalnorm, t)
         end
         OrdinaryDiffEqCore.set_EEst!(integrator, error_constant(integrator, k) * internalnorm(atmp, t))
         if k > 1
@@ -1052,6 +1111,7 @@ function perform_step!(
         end
         cache.dtprev = dt
         cache.prevorder = k
+        cache.restart = false
         if integrator.opts.dense
             f(integrator.fsallast, u, p, t + dt)
             OrdinaryDiffEqCore.increment_nf!(integrator.stats, 1)

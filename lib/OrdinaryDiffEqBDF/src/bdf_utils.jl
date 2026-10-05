@@ -128,6 +128,38 @@ function update_D!(D, dd, k)
     return nothing
 end
 
+# QNDF restart: the history after a discontinuity.
+#
+# A restart drops the backward differences, which leaves the first step's predictor
+# flat, `u₀ = uprev`, and its error estimate `dd = u - u₀ ≈ dt u'` instead of
+# `O(dt² u'')`. The vector field on the new side of the discontinuity gives the
+# first difference directly: with the fictitious previous step of the same length,
+# ∇u = dt u'(t⁺), the first step is an ordinary order-1 step.
+#
+# For `M u' = f(u)` that holds row by row where `M` has a nonzero diagonal entry:
+# `u'ᵢ = fᵢ / Mᵢᵢ`. Rows with `Mᵢᵢ = 0` are algebraic: `fᵢ` is a residual, not a
+# derivative, and `u'ᵢ` follows from the constraint's Jacobian, so they get no seed
+# (flat predictor) and drop out of the first step's error estimate and second
+# differences (`_qndf_mask_algebraic!`); their D[1] is still `u - uprev`.
+# A mass matrix that is not diagonal has no such row-wise reading: no seed, the
+# restart is the unseeded one.
+
+# The diagonal of a diagonal mass matrix, a vector or (for `λ I`) a scalar; `nothing`
+# when the mass matrix is not diagonal.
+_qndf_mass_diagonal(M::UniformScaling) = M.λ
+_qndf_mass_diagonal(M::Diagonal) = M.diag
+_qndf_mass_diagonal(M::AbstractMatrix) = isdiag(M) ? diag(M) : nothing
+_qndf_mass_diagonal(M) = nothing
+
+# Whether the diagonal `m` has algebraic rows
+_qndf_has_algebraic(m::Number) = iszero(m)
+_qndf_has_algebraic(m) = any(iszero, m)
+
+# Row-wise (broadcast): `u'` from `M u' = f`, zero on algebraic rows
+@inline _qndf_rate(f, m) = iszero(m) ? zero(f) : f / m
+# Row-wise (broadcast): `x` with algebraic rows zeroed
+@inline _qndf_differential(x, m) = iszero(m) ? zero(x) : x
+
 const γₖ = ntuple(k -> sum(Int64(1) // j for j in 1:k), 6)
 
 # SBDF uses fixed-coefficient formulas that assume uniformly spaced history, so a

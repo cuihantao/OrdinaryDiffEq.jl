@@ -418,6 +418,7 @@ end
     EEst1::EEstType #Error Estimator for k-1 order
     EEst2::EEstType #Error Estimator for k+1 order
     γₖ::gammaType
+    restart::Bool # The step in progress is the first since a seeded restart (see `_qndf_restart!`)
 end
 
 function alg_cache(
@@ -459,7 +460,7 @@ function alg_cache(
 
     return QNDFConstantCache(
         nlsolver, U, R, RU, D, prevD, 1, 1, Val(max_order), dtprev, 0, 0, EEst1,
-        EEst2, γₖ
+        EEst2, γₖ, false
     )
 end
 
@@ -499,6 +500,7 @@ end
     atmpp1::uNoUnitsType
     dense::Vector{uType}
     step_limiter!::StepLimiter
+    restart::Bool # The step in progress is the first since a seeded restart (see `_qndf_restart!`)
 end
 
 @truncate_stacktrace QNDFCache 1
@@ -552,7 +554,7 @@ function alg_cache(
     return QNDFCache(
         u, uprev, fsalfirst, dd, utilde, utildem1, utildep1, ϕ, u₀, nlsolver, U, R, RU,
         D, Dtmp, tmp2, prevD, 1, 1, Val(max_order), dtprev, 0, 0, EEst1, EEst2, γₖ, atmp,
-        atmpm1, atmpp1, dense, alg.step_limiter!
+        atmpm1, atmpp1, dense, alg.step_limiter!, false
     )
 end
 
