@@ -37,6 +37,7 @@ if TEST_GROUP == "Core" || TEST_GROUP == "ALL"
     @time @safetestset "Nordsieck BDF Tests" include("nordsieck_tests.jl")
     @time @safetestset "QNDF Callback Interpolation Tests" include("qndf_callback_interpolation_tests.jl")
     @time @safetestset "QNDF Restart Tests" include("qndf_restart_tests.jl")
+    @time @safetestset "QNDF Jacobian Refresh Tests" include("qndf_jacobian_refresh_tests.jl")
     @time @safetestset "LHL Factorization Tests" include("lhl_factorization_tests.jl")
 end
 

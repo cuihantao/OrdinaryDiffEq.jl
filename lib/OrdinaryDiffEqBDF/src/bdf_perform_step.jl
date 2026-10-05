@@ -814,6 +814,23 @@ function _qndf_restart!(cache::QNDFCache, integrator)
     return dt
 end
 
+# A discontinuity leaves `J` as taken on the other side of it. The shared rule
+# (`isJcurrent`) compares only `t`, and a callback acts at the `t` of the last evaluation
+# as well, so QNDF takes a new `J` and `W` at the first stage of the step the discontinuity
+# flag marks (the retries of a rejected step see it cleared and keep that `J`).
+function OrdinaryDiffEqDifferentiation.do_newJW(
+        integrator, alg::QNDF, nlsolver, repeat_step
+    )::NTuple{2, Bool}
+    if integrator.derivative_discontinuity && !repeat_step && isnewton(nlsolver) &&
+            isfirststage(nlsolver)
+        return true, true
+    end
+    return invoke(
+        OrdinaryDiffEqDifferentiation.do_newJW, Tuple{Any, Any, Any, Any},
+        integrator, alg, nlsolver, repeat_step
+    )
+end
+
 function initialize!(integrator, cache::QNDFConstantCache{max_order}) where {max_order}
     integrator.kshortsize = max_order
     integrator.k = typeof(integrator.k)(undef, integrator.kshortsize)
